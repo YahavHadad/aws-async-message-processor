@@ -55,7 +55,7 @@ resource "aws_launch_template" "ecs" {
 
   tag_specifications {
     resource_type = "instance"
-    tags = { Name = "${var.name}-ecs-instance" }
+    tags          = { Name = "${var.name}-ecs-instance" }
   }
 
   lifecycle {

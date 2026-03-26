@@ -107,10 +107,10 @@ module "iam" {
     module.ssm.consumer_sqs_wait_time_seconds_arn,
     module.ssm.consumer_sqs_max_messages_arn
   ]
-  sqs_queue_arn     = module.sqs.queue_arn
+  sqs_queue_arn    = module.sqs.queue_arn
   s3_bucket_arn    = module.s3.bucket_arn
-  log_group_prefix  = "/ecs/${local.name}"
-  ecs_cluster_name  = "${local.name}-cluster"
+  log_group_prefix = "/ecs/${local.name}"
+  ecs_cluster_name = "${local.name}-cluster"
 }
 
 # ── ECS (cluster + EC2 instances + services + autoscaling) ──────
@@ -136,8 +136,8 @@ module "ecs" {
   producer_image = "${module.ecr.producer_repository_url}:${var.producer_image_tag}"
   consumer_image = "${module.ecr.consumer_repository_url}:${var.consumer_image_tag}"
 
-  sqs_queue_name     = module.sqs.queue_name
-  ssm_parameter_name = module.ssm.parameter_name
+  sqs_queue_name                         = module.sqs.queue_name
+  ssm_parameter_name                     = module.ssm.parameter_name
   producer_sqs_queue_url_ssm_arn         = module.ssm.producer_sqs_queue_url_arn
   consumer_sqs_queue_url_ssm_arn         = module.ssm.consumer_sqs_queue_url_arn
   consumer_s3_bucket_name_ssm_arn        = module.ssm.consumer_s3_bucket_name_arn
