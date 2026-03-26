@@ -154,7 +154,7 @@ module "ecs" {
   consumer_desired_count = 1
   producer_max_count     = 2
   consumer_max_count     = 2
-  log_retention_days     = 3
+  log_retention_days     = 7
 }
 
 # ── Monitoring (CloudWatch dashboard + alarms + SNS) ─────────────
