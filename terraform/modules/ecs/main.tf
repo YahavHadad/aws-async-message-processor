@@ -150,11 +150,11 @@ resource "aws_ecs_task_definition" "producer" {
 # ── Producer Service ────────────────────────────────────────────
 
 resource "aws_ecs_service" "producer" {
-  name            = "${var.name}-producer-svc"
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.producer.arn
-  desired_count   = var.producer_desired_count
-  launch_type     = "EC2"
+  name                               = "${var.name}-producer-svc"
+  cluster                            = aws_ecs_cluster.this.id
+  task_definition                    = aws_ecs_task_definition.producer.arn
+  desired_count                      = var.producer_desired_count
+  launch_type                        = "EC2"
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
@@ -216,11 +216,11 @@ resource "aws_ecs_task_definition" "consumer" {
 # ── Consumer Service ────────────────────────────────────────────
 
 resource "aws_ecs_service" "consumer" {
-  name            = "${var.name}-consumer-svc"
-  cluster         = aws_ecs_cluster.this.id
-  task_definition = aws_ecs_task_definition.consumer.arn
-  desired_count   = var.consumer_desired_count
-  launch_type     = "EC2"
+  name                               = "${var.name}-consumer-svc"
+  cluster                            = aws_ecs_cluster.this.id
+  task_definition                    = aws_ecs_task_definition.consumer.arn
+  desired_count                      = var.consumer_desired_count
+  launch_type                        = "EC2"
   deployment_minimum_healthy_percent = 0
   deployment_maximum_percent         = 100
 
