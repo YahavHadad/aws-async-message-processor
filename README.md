@@ -205,8 +205,8 @@ After infra + app deployment, call producer through the load balancer:
 import json
 import requests
 
-CLB_DNS = "http://<your-clb-dns-name>"
-TOKEN = "<your-validation-token>"
+CLB_DNS = "http://async-msg-proc-dev-clb-1096803901.eu-west-1.elb.amazonaws.com"
+TOKEN = "<your-validation-token>" //as displayed in the exam pdf example
 
 payload = {
     "data": {

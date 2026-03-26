@@ -208,6 +208,15 @@ resource "aws_ecs_task_definition" "consumer" {
         "awslogs-stream-prefix" = "consumer"
       }
     }
+
+    # Consumer has no HTTP endpoint, so use a lightweight process health check.
+    healthCheck = {
+      command     = ["CMD-SHELL", "python -c \"import pathlib,sys; cmd = pathlib.Path('/proc/1/cmdline').read_text(); sys.exit(0 if 'python' in cmd else 1)\""]
+      interval    = 30
+      timeout     = 5
+      retries     = 3
+      startPeriod = 10
+    }
   }])
 
   tags = { Name = "${var.name}-consumer-td" }
