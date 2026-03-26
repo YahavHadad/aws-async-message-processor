@@ -23,15 +23,18 @@ All resources are chosen to stay within Free Tier boundaries where possible:
 
 I intentionally did **not** use ECS Fargate because it is not Free Tier eligible for this assignment scope.
 
-### Terraform state choice (local state)
+### Terraform state choice (remote state)
 
-This repo uses **local Terraform state** for `dev` and `prod`.
+This repo uses **remote Terraform state** for `dev` and `prod` via:
 
-Reason: in this account/org, `s3:PutBucketPublicAccessBlock` is denied by SCP, so creating a hardened remote-state S3 bucket via Terraform fails.  
-If that policy restriction did not exist, I would use the standard production approach:
-
-- S3 backend for state
+- S3 backend for state storage
 - DynamoDB table for state locking
+
+Current backend configuration:
+
+- S3 bucket: `async-msg-proc-prod-messages-371670420772`
+- DynamoDB lock table: `tf_locks`
+- Region: `eu-west-1`
 
 ---
 
@@ -233,5 +236,4 @@ Expected:
 ## Notes for evaluators
 
 - The design intentionally balances production patterns with Free Tier constraints.
-- Local Terraform state is a practical fallback here due to account SCP restrictions around public-access-block API calls on S3.
-- If policy permits, switching to S3+DynamoDB backend is straightforward.
+- Terraform state is managed remotely with S3 and protected with DynamoDB state locking for safe concurrent operations.
