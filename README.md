@@ -125,6 +125,8 @@ Producer and consumer are decoupled using path filtering, so only changed servic
 3. Integration tests
 4. Optional ECR push
 
+Integration tests are conceptually a separate stage from image build. In this project they are intentionally executed in the same reusable workflow/job sequence on GitHub-hosted runners, so the already-built image can be reused immediately and only successful images are pushed to ECR. This reduces duplicate build/push cycles and helps control CI/CD cost and registry churn.
+
 ### CI
 
 - Runs service verification flow (unit + build + integration)
