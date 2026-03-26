@@ -141,7 +141,7 @@ jobs:
         working-directory: ${{ env.WORKING_DIR }}
 
       - name: Notify via SNS
-        if: always() && env.SNS_TOPIC_ARN != ''
+        if: always() && env.SNS_TOPIC_ARN != '' && github.event.inputs.environment != '_bootstrap'
         env:
           SNS_TOPIC_ARN: ${{ secrets.SNS_TOPIC_ARN }}
         run: |
