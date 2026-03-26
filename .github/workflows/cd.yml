@@ -1,0 +1,199 @@
+name: CD – Build, Push & Deploy Services
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches: [main]
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER_NAME }}
+
+jobs:
+  # ── Detect which services changed ─────────────────────────────
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      producer: ${{ steps.filter.outputs.producer }}
+      consumer: ${{ steps.filter.outputs.consumer }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            producer:
+              - "services/producer/**"
+            consumer:
+              - "services/consumer/**"
+
+  # ── Producer pipeline (unit → build → integration → push) ─────
+  producer-pipeline:
+    name: Producer
+    needs: detect-changes
+    if: needs.detect-changes.outputs.producer == 'true'
+    uses: ./.github/workflows/_service-pipeline.yml
+    with:
+      service: producer
+      push_image: true
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # ── Consumer pipeline (unit → build → integration → push) ─────
+  consumer-pipeline:
+    name: Consumer
+    needs: detect-changes
+    if: needs.detect-changes.outputs.consumer == 'true'
+    uses: ./.github/workflows/_service-pipeline.yml
+    with:
+      service: consumer
+      push_image: true
+    secrets:
+      AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+      AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  # ── Deploy changed services to ECS ───────────────────────────
+  deploy:
+    name: Deploy to ECS
+    needs: [detect-changes, producer-pipeline, consumer-pipeline]
+    if: |
+      always() &&
+      (needs.producer-pipeline.result == 'success' || needs.producer-pipeline.result == 'skipped') &&
+      (needs.consumer-pipeline.result == 'success' || needs.consumer-pipeline.result == 'skipped') &&
+      (needs.detect-changes.outputs.producer == 'true' || needs.detect-changes.outputs.consumer == 'true')
+    runs-on: ubuntu-latest
+    environment: production
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      # ── Deploy Producer ──────────────────────────────────────
+      - name: Snapshot producer task def before deploy
+        if: needs.detect-changes.outputs.producer == 'true'
+        id: pre-producer
+        run: |
+          TD=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-producer-svc \
+            --query 'services[0].taskDefinition' --output text)
+          echo "task_def=$TD" >> "$GITHUB_OUTPUT"
+          echo "Pre-deploy task definition: $TD"
+
+      - name: Force new deployment (producer)
+        if: needs.detect-changes.outputs.producer == 'true'
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service async-msg-proc-prod-producer-svc \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      # ── Deploy Consumer ──────────────────────────────────────
+      - name: Snapshot consumer task def before deploy
+        if: needs.detect-changes.outputs.consumer == 'true'
+        id: pre-consumer
+        run: |
+          TD=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-consumer-svc \
+            --query 'services[0].taskDefinition' --output text)
+          echo "task_def=$TD" >> "$GITHUB_OUTPUT"
+          echo "Pre-deploy task definition: $TD"
+
+      - name: Force new deployment (consumer)
+        if: needs.detect-changes.outputs.consumer == 'true'
+        run: |
+          aws ecs update-service \
+            --cluster $ECS_CLUSTER \
+            --service async-msg-proc-prod-consumer-svc \
+            --force-new-deployment \
+            --region $AWS_REGION
+
+      # ── Wait for stability ───────────────────────────────────
+      - name: Wait for producer to stabilize
+        if: needs.detect-changes.outputs.producer == 'true'
+        run: |
+          echo "Waiting for producer service…"
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-producer-svc \
+            --region $AWS_REGION
+
+      - name: Wait for consumer to stabilize
+        if: needs.detect-changes.outputs.consumer == 'true'
+        run: |
+          echo "Waiting for consumer service…"
+          aws ecs wait services-stable \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-consumer-svc \
+            --region $AWS_REGION
+
+      # ── Rollback detection ───────────────────────────────────
+      - name: Verify producer deployment (rollback detection)
+        if: needs.detect-changes.outputs.producer == 'true'
+        run: |
+          CURRENT_TD=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-producer-svc \
+            --query 'services[0].taskDefinition' --output text)
+          PRE_TD="${{ steps.pre-producer.outputs.task_def }}"
+          echo "Before: $PRE_TD"
+          echo "After:  $CURRENT_TD"
+          if [ "$CURRENT_TD" = "$PRE_TD" ]; then
+            echo "::error::ROLLBACK DETECTED – Producer reverted to the previous task definition."
+            echo "::error::The circuit breaker rolled back the deployment. Check ECS events and CloudWatch logs."
+            aws ecs describe-services \
+              --cluster $ECS_CLUSTER \
+              --services async-msg-proc-prod-producer-svc \
+              --query 'services[0].events[:5]' --output table
+            exit 1
+          fi
+          echo "Producer deployed successfully to $CURRENT_TD"
+
+      - name: Verify consumer deployment (rollback detection)
+        if: needs.detect-changes.outputs.consumer == 'true'
+        run: |
+          CURRENT_TD=$(aws ecs describe-services \
+            --cluster $ECS_CLUSTER \
+            --services async-msg-proc-prod-consumer-svc \
+            --query 'services[0].taskDefinition' --output text)
+          PRE_TD="${{ steps.pre-consumer.outputs.task_def }}"
+          echo "Before: $PRE_TD"
+          echo "After:  $CURRENT_TD"
+          if [ "$CURRENT_TD" = "$PRE_TD" ]; then
+            echo "::error::ROLLBACK DETECTED – Consumer reverted to the previous task definition."
+            echo "::error::The circuit breaker rolled back the deployment. Check ECS events and CloudWatch logs."
+            aws ecs describe-services \
+              --cluster $ECS_CLUSTER \
+              --services async-msg-proc-prod-consumer-svc \
+              --query 'services[0].events[:5]' --output table
+            exit 1
+          fi
+          echo "Consumer deployed successfully to $CURRENT_TD"
+
+      # ── SNS notification ──────────────────────────────────
+      - name: Notify via SNS
+        if: always() && env.SNS_TOPIC_ARN != ''
+        env:
+          SNS_TOPIC_ARN: ${{ secrets.SNS_TOPIC_ARN }}
+        run: |
+          STATUS="${{ job.status }}"
+          aws sns publish \
+            --topic-arn "$SNS_TOPIC_ARN" \
+            --subject "[${STATUS^^}] ECS Deploy – ${GITHUB_REPOSITORY##*/}" \
+            --message "Status:  $STATUS
+          Repo:    ${{ github.repository }}
+          Commit:  ${{ github.sha }}
+          Actor:   ${{ github.actor }}
+          Run:     ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

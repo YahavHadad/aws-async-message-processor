@@ -1,0 +1,158 @@
+name: Infra – Terraform Plan & Apply
+
+on:
+  workflow_dispatch:
+    inputs:
+      environment:
+        description: "Target environment"
+        required: true
+        type: choice
+        options:
+          - prod
+          - dev
+          - _bootstrap
+  # push:
+  #   paths:
+  #     - terraform/**
+  #     - .github/workflows/infra.yml
+  # pull_request:
+  #   paths:
+  #     - terraform/modules/**
+  #     - terraform/envs/prod/**
+  #     - terraform/envs/dev/**
+  #     - .github/workflows/infra.yml
+
+permissions:
+  contents: read
+  pull-requests: write
+
+env:
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  TF_VERSION: "1.7.0"
+  WORKING_DIR: terraform/envs/${{ github.event.inputs.environment || 'dev' }}
+  TF_VAR_validation_token: ${{ secrets.VALIDATION_TOKEN }}
+
+jobs:
+  # ── Fast checks on every push (any branch) ─────────────────────
+  tf-check:
+    name: "Terraform fmt & validate"
+    if: github.event_name == 'push' && github.ref != 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      # Validate both env roots without touching remote backend.
+      - name: Terraform init (dev, backend disabled)
+        run: terraform init -input=false -backend=false
+        working-directory: terraform/envs/dev
+
+      - name: Terraform validate (dev)
+        run: terraform validate
+        working-directory: terraform/envs/dev
+
+      - name: Terraform init (prod, backend disabled)
+        run: terraform init -input=false -backend=false
+        working-directory: terraform/envs/prod
+
+      - name: Terraform validate (prod)
+        run: terraform validate
+        working-directory: terraform/envs/prod
+
+  # ── Validate & Plan ───────────────────────────────────────────
+  plan:
+    name: "Terraform Plan – ${{ github.event.inputs.environment || 'dev' }}"
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'pull_request' || github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform fmt check
+        run: terraform fmt -check -recursive
+        working-directory: terraform
+
+      - name: Terraform Init
+        run: terraform init -input=false
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Validate
+        run: terraform validate
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Plan
+        id: plan
+        run: |
+          terraform plan -input=false -no-color -out=tfplan 2>&1 | tee plan_output.txt
+          echo "plan_exit_code=${PIPESTATUS[0]}" >> "$GITHUB_OUTPUT"
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Print plan output
+        run: cat plan_output.txt
+        working-directory: ${{ env.WORKING_DIR }}
+
+  # ── Apply (manual dispatch only) ───────────────────────────────
+  apply:
+    name: "Terraform Apply – ${{ github.event.inputs.environment }}"
+    needs: plan
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    environment: ${{ github.event.inputs.environment }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: ${{ env.TF_VERSION }}
+
+      - name: Terraform Init
+        run: terraform init -input=false
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Terraform Apply
+        run: terraform apply -input=false -auto-approve
+        working-directory: ${{ env.WORKING_DIR }}
+
+      - name: Notify via SNS
+        if: always() && env.SNS_TOPIC_ARN != ''
+        env:
+          SNS_TOPIC_ARN: ${{ secrets.SNS_TOPIC_ARN }}
+        run: |
+          STATUS="${{ job.status }}"
+          ENV="${{ github.event.inputs.environment }}"
+          aws sns publish \
+            --topic-arn "$SNS_TOPIC_ARN" \
+            --subject "[${STATUS^^}] Terraform Apply ($ENV) – ${GITHUB_REPOSITORY##*/}" \
+            --message "Status:       $STATUS
+          Environment:  $ENV
+          Repo:         ${{ github.repository }}
+          Commit:       ${{ github.sha }}
+          Actor:        ${{ github.actor }}
+          Run:          ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"

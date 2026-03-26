@@ -1,0 +1,187 @@
+##############################################################################
+# Reusable workflow: Unit test → Docker build → Integration test → Push
+#
+# Called by ci.yml (push_image=false) and cd.yml (push_image=true).
+# Each service (producer / consumer) runs through this pipeline independently.
+##############################################################################
+name: Service Pipeline
+
+on:
+  workflow_call:
+    inputs:
+      service:
+        description: "Service name (producer or consumer)"
+        required: true
+        type: string
+      push_image:
+        description: "Push the image to ECR after tests pass"
+        required: false
+        type: boolean
+        default: false
+      aws_region:
+        required: false
+        type: string
+        default: "eu-west-1"
+      ecr_repo_name:
+        description: "ECR repository name (defaults to async-msg-proc-prod-<service>)"
+        required: false
+        type: string
+        default: ""
+    outputs:
+      image_tag:
+        description: "The image tag that was built (git SHA)"
+        value: ${{ jobs.build-and-test.outputs.image_tag }}
+    secrets:
+      AWS_ACCESS_KEY_ID:
+        required: false
+      AWS_SECRET_ACCESS_KEY:
+        required: false
+
+env:
+  CONTAINER_NAME: ${{ inputs.service }}-integration-test
+  CONTAINER_PORT: "8000"
+
+jobs:
+  # ── Unit Tests ────────────────────────────────────────────────
+  unit-test:
+    name: "Unit Test – ${{ inputs.service }}"
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: services/${{ inputs.service }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: services/${{ inputs.service }}/requirements.txt
+
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio moto[all] httpx
+
+      - name: Run unit tests
+        run: pytest tests/ --ignore=tests/test_integration.py -v --tb=short
+
+  # ── Build → Integration Test → Push ───────────────────────────
+  build-and-integration-test:
+    name: "Build & Integration Test – ${{ inputs.service }}"
+    needs: unit-test
+    runs-on: ubuntu-latest
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image metadata
+        id: meta
+        run: |
+          echo "tag=${{ github.sha }}" >> "$GITHUB_OUTPUT"
+          echo "local_image=${{ inputs.service }}-ci:${{ github.sha }}" >> "$GITHUB_OUTPUT"
+
+      - name: Build Docker image
+        run: |
+          docker build \
+            -f services/${{ inputs.service }}/Dockerfile \
+            -t ${{ steps.meta.outputs.local_image }} \
+            .
+
+      # ── Start the container ──────────────────────────────────
+      - name: Start container (producer)
+        if: inputs.service == 'producer'
+        run: |
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -p ${{ env.CONTAINER_PORT }}:${{ env.CONTAINER_PORT }} \
+            -e APP_TEST_MODE=1 \
+            -e APP_TEST_TOKEN=test-secret-token-123 \
+            -e AWS_REGION=us-east-1 \
+            -e SQS_QUEUE_URL=http://localhost:4566/000000000000/test-queue \
+            -e SSM_TOKEN_NAME=/test/token \
+            -e PORT=${{ env.CONTAINER_PORT }} \
+            ${{ steps.meta.outputs.local_image }}
+
+      - name: Start container (consumer)
+        if: inputs.service == 'consumer'
+        run: |
+          docker run -d \
+            --name ${{ env.CONTAINER_NAME }} \
+            -e APP_TEST_MODE=1 \
+            -e AWS_REGION=us-east-1 \
+            -e SQS_QUEUE_URL=http://localhost:4566/000000000000/test-queue \
+            -e S3_BUCKET_NAME=test-bucket \
+            ${{ steps.meta.outputs.local_image }}
+
+      # ── Wait for readiness ───────────────────────────────────
+      - name: Wait for producer health
+        if: inputs.service == 'producer'
+        run: |
+          for i in $(seq 1 30); do
+            if curl -sf http://localhost:${{ env.CONTAINER_PORT }}/health > /dev/null 2>&1; then
+              echo "Producer is healthy"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "::error::Producer failed to become healthy"
+          docker logs ${{ env.CONTAINER_NAME }}
+          exit 1
+
+      - name: Wait for consumer startup
+        if: inputs.service == 'consumer'
+        run: sleep 10
+
+      # ── Run Python integration tests ─────────────────────────
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install test dependencies
+        run: pip install pytest httpx
+
+      - name: Run integration tests
+        env:
+          INTEGRATION_TEST_URL: http://localhost:${{ env.CONTAINER_PORT }}
+          INTEGRATION_CONTAINER: ${{ env.CONTAINER_NAME }}
+        run: |
+          pytest services/${{ inputs.service }}/tests/test_integration.py \
+            -v --tb=short
+
+      # ── Cleanup ──────────────────────────────────────────────
+
+      - name: Stop container
+        if: always()
+        run: docker rm -f ${{ env.CONTAINER_NAME }} || true
+
+      # ── Push to ECR (only when push_image=true) ──────────────
+      - name: Configure AWS credentials
+        if: inputs.push_image
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: ${{ inputs.aws_region }}
+
+      - name: Login to Amazon ECR
+        if: inputs.push_image
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Tag & push to ECR
+        if: inputs.push_image
+        env:
+          ECR_REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+          ECR_REPO: ${{ inputs.ecr_repo_name != '' && inputs.ecr_repo_name || format('async-msg-proc-prod-{0}', inputs.service) }}
+          IMAGE_TAG: ${{ steps.meta.outputs.tag }}
+          LOCAL_IMAGE: ${{ steps.meta.outputs.local_image }}
+        run: |
+          docker tag "$LOCAL_IMAGE" "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          docker tag "$LOCAL_IMAGE" "$ECR_REGISTRY/$ECR_REPO:latest"
+          docker push "$ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"
+          docker push "$ECR_REGISTRY/$ECR_REPO:latest"
+          echo "Pushed $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG"

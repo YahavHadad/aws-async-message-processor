@@ -1,0 +1,46 @@
+name: CI – Unit Test, Build, Integration
+
+on:
+  workflow_dispatch:
+  # push:
+  #   branches:
+  #     - "**"
+
+jobs:
+  # ── Detect which services changed ─────────────────────────────
+  detect-changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      producer: ${{ steps.filter.outputs.producer }}
+      consumer: ${{ steps.filter.outputs.consumer }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            producer:
+              - "services/producer/**"
+            consumer:
+              - "services/consumer/**"
+
+  # ── Producer pipeline (unit → build → integration; no push) ──
+  producer:
+    name: Producer
+    needs: detect-changes
+    if: needs.detect-changes.outputs.producer == 'true'
+    uses: ./.github/workflows/_service-pipeline.yml
+    with:
+      service: producer
+      push_image: false
+
+  # ── Consumer pipeline (unit → build → integration; no push) ──
+  consumer:
+    name: Consumer
+    needs: detect-changes
+    if: needs.detect-changes.outputs.consumer == 'true'
+    uses: ./.github/workflows/_service-pipeline.yml
+    with:
+      service: consumer
+      push_image: false
