@@ -2,6 +2,16 @@ name: CD – Build, Push & Deploy Services
 
 on:
   workflow_dispatch:
+    inputs:
+      target_service:
+        description: "Service(s) to run"
+        required: true
+        type: choice
+        options:
+          - producer
+          - consumer
+          - both
+        default: both
   # push:
   #   branches: [main]
 
@@ -34,7 +44,9 @@ jobs:
   producer-pipeline:
     name: Producer
     needs: detect-changes
-    if: needs.detect-changes.outputs.producer == 'true'
+    if: |
+      (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+      (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
     uses: ./.github/workflows/_service-pipeline.yml
     with:
       service: producer
@@ -47,7 +59,9 @@ jobs:
   consumer-pipeline:
     name: Consumer
     needs: detect-changes
-    if: needs.detect-changes.outputs.consumer == 'true'
+    if: |
+      (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+      (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
     uses: ./.github/workflows/_service-pipeline.yml
     with:
       service: consumer
@@ -64,7 +78,10 @@ jobs:
       always() &&
       (needs.producer-pipeline.result == 'success' || needs.producer-pipeline.result == 'skipped') &&
       (needs.consumer-pipeline.result == 'success' || needs.consumer-pipeline.result == 'skipped') &&
-      (needs.detect-changes.outputs.producer == 'true' || needs.detect-changes.outputs.consumer == 'true')
+      (
+        (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+        (github.event_name != 'workflow_dispatch' && (needs.detect-changes.outputs.producer == 'true' || needs.detect-changes.outputs.consumer == 'true'))
+      )
     runs-on: ubuntu-latest
     environment: production
 
@@ -80,72 +97,86 @@ jobs:
 
       # ── Deploy Producer ──────────────────────────────────────
       - name: Snapshot producer task def before deploy
-        if: needs.detect-changes.outputs.producer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
         id: pre-producer
         run: |
           TD=$(aws ecs describe-services \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-producer-svc \
+            --services async-msg-proc-dev-producer-svc \
             --query 'services[0].taskDefinition' --output text)
           echo "task_def=$TD" >> "$GITHUB_OUTPUT"
           echo "Pre-deploy task definition: $TD"
 
       - name: Force new deployment (producer)
-        if: needs.detect-changes.outputs.producer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
         run: |
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
-            --service async-msg-proc-prod-producer-svc \
+            --service async-msg-proc-dev-producer-svc \
             --force-new-deployment \
             --region $AWS_REGION
 
       # ── Deploy Consumer ──────────────────────────────────────
       - name: Snapshot consumer task def before deploy
-        if: needs.detect-changes.outputs.consumer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
         id: pre-consumer
         run: |
           TD=$(aws ecs describe-services \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-consumer-svc \
+            --services async-msg-proc-dev-consumer-svc \
             --query 'services[0].taskDefinition' --output text)
           echo "task_def=$TD" >> "$GITHUB_OUTPUT"
           echo "Pre-deploy task definition: $TD"
 
       - name: Force new deployment (consumer)
-        if: needs.detect-changes.outputs.consumer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
         run: |
           aws ecs update-service \
             --cluster $ECS_CLUSTER \
-            --service async-msg-proc-prod-consumer-svc \
+            --service async-msg-proc-dev-consumer-svc \
             --force-new-deployment \
             --region $AWS_REGION
 
       # ── Wait for stability ───────────────────────────────────
       - name: Wait for producer to stabilize
-        if: needs.detect-changes.outputs.producer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
         run: |
           echo "Waiting for producer service…"
           aws ecs wait services-stable \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-producer-svc \
+            --services async-msg-proc-dev-producer-svc \
             --region $AWS_REGION
 
       - name: Wait for consumer to stabilize
-        if: needs.detect-changes.outputs.consumer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
         run: |
           echo "Waiting for consumer service…"
           aws ecs wait services-stable \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-consumer-svc \
+            --services async-msg-proc-dev-consumer-svc \
             --region $AWS_REGION
 
       # ── Rollback detection ───────────────────────────────────
       - name: Verify producer deployment (rollback detection)
-        if: needs.detect-changes.outputs.producer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
         run: |
           CURRENT_TD=$(aws ecs describe-services \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-producer-svc \
+            --services async-msg-proc-dev-producer-svc \
             --query 'services[0].taskDefinition' --output text)
           PRE_TD="${{ steps.pre-producer.outputs.task_def }}"
           echo "Before: $PRE_TD"
@@ -155,18 +186,20 @@ jobs:
             echo "::error::The circuit breaker rolled back the deployment. Check ECS events and CloudWatch logs."
             aws ecs describe-services \
               --cluster $ECS_CLUSTER \
-              --services async-msg-proc-prod-producer-svc \
+              --services async-msg-proc-dev-producer-svc \
               --query 'services[0].events[:5]' --output table
             exit 1
           fi
           echo "Producer deployed successfully to $CURRENT_TD"
 
       - name: Verify consumer deployment (rollback detection)
-        if: needs.detect-changes.outputs.consumer == 'true'
+        if: |
+          (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+          (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
         run: |
           CURRENT_TD=$(aws ecs describe-services \
             --cluster $ECS_CLUSTER \
-            --services async-msg-proc-prod-consumer-svc \
+            --services async-msg-proc-dev-consumer-svc \
             --query 'services[0].taskDefinition' --output text)
           PRE_TD="${{ steps.pre-consumer.outputs.task_def }}"
           echo "Before: $PRE_TD"
@@ -176,7 +209,7 @@ jobs:
             echo "::error::The circuit breaker rolled back the deployment. Check ECS events and CloudWatch logs."
             aws ecs describe-services \
               --cluster $ECS_CLUSTER \
-              --services async-msg-proc-prod-consumer-svc \
+              --services async-msg-proc-dev-consumer-svc \
               --query 'services[0].events[:5]' --output table
             exit 1
           fi

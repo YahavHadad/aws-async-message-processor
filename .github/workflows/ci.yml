@@ -2,6 +2,16 @@ name: CI – Unit Test, Build, Integration
 
 on:
   workflow_dispatch:
+    inputs:
+      target_service:
+        description: "Service(s) to run"
+        required: true
+        type: choice
+        options:
+          - producer
+          - consumer
+          - both
+        default: both
   # push:
   #   branches:
   #     - "**"
@@ -29,7 +39,9 @@ jobs:
   producer:
     name: Producer
     needs: detect-changes
-    if: needs.detect-changes.outputs.producer == 'true'
+    if: |
+      (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'producer' || inputs.target_service == 'both')) ||
+      (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.producer == 'true')
     uses: ./.github/workflows/_service-pipeline.yml
     with:
       service: producer
@@ -39,7 +51,9 @@ jobs:
   consumer:
     name: Consumer
     needs: detect-changes
-    if: needs.detect-changes.outputs.consumer == 'true'
+    if: |
+      (github.event_name == 'workflow_dispatch' && (inputs.target_service == 'consumer' || inputs.target_service == 'both')) ||
+      (github.event_name != 'workflow_dispatch' && needs.detect-changes.outputs.consumer == 'true')
     uses: ./.github/workflows/_service-pipeline.yml
     with:
       service: consumer
