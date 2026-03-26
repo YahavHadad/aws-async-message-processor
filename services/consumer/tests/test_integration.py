@@ -1,9 +1,10 @@
 """Integration tests for the Consumer service.
 
 These run against the actual Docker container (started by CI).
-The consumer has no HTTP endpoint — it's a background SQS poller.
-Without real AWS access, it will fail to connect to SQS but should
-handle errors gracefully (backoff, no crash).
+The consumer has no HTTP endpoint - it is a background SQS poller.
+
+In CI we run with ``APP_TEST_MODE=1``, so the process must stay healthy
+without creating AWS clients or making outbound AWS calls.
 
 We validate via ``docker inspect`` and ``docker logs``.
 
@@ -56,22 +57,22 @@ class TestStartupBehavior:
             f"Expected 'Consumer started' in logs, got:\n{logs[:500]}"
         )
 
-    def test_logs_contain_queue_url(self) -> None:
+    def test_logs_show_app_test_mode(self) -> None:
         logs = _get_logs()
-        assert "test-queue" in logs or "SQS" in logs.upper(), (
-            "Logs should reference the SQS queue"
+        assert "APP_TEST_MODE enabled" in logs and "no AWS clients will be created" in logs, (
+            "Logs should confirm AWS calls are disabled in integration mode"
         )
 
 
 class TestErrorResilience:
     def test_container_survives_sqs_errors(self) -> None:
-        """Without real SQS, the consumer should log errors and back off — not crash."""
+        """In APP_TEST_MODE the consumer should keep running without AWS access."""
         assert _is_running(), "Container should survive SQS connection failures"
 
-    def test_logs_show_backoff(self) -> None:
+    def test_logs_do_not_show_aws_error_loop(self) -> None:
         logs = _get_logs()
-        assert "backing off" in logs.lower() or "error" in logs.lower(), (
-            "Logs should show error handling / backoff behavior"
+        assert "backing off" not in logs.lower(), (
+            "APP_TEST_MODE should bypass live AWS polling/backoff loop"
         )
 
     def test_container_did_not_exit(self) -> None:
