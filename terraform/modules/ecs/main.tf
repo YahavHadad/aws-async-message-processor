@@ -155,16 +155,13 @@ resource "aws_ecs_service" "producer" {
   task_definition = aws_ecs_task_definition.producer.arn
   desired_count   = var.producer_desired_count
   launch_type     = "EC2"
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   load_balancer {
     elb_name       = var.clb_name
     container_name = "producer"
     container_port = var.producer_container_port
-  }
-
-  deployment_configuration {
-    minimum_healthy_percent = 0
-    maximum_percent         = 100
   }
 
   lifecycle {
@@ -224,11 +221,8 @@ resource "aws_ecs_service" "consumer" {
   task_definition = aws_ecs_task_definition.consumer.arn
   desired_count   = var.consumer_desired_count
   launch_type     = "EC2"
-
-  deployment_configuration {
-    minimum_healthy_percent = 0
-    maximum_percent         = 100
-  }
+  deployment_minimum_healthy_percent = 0
+  deployment_maximum_percent         = 100
 
   lifecycle {
     ignore_changes = [desired_count, task_definition]

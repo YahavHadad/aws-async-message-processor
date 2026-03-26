@@ -37,6 +37,8 @@ resource "aws_s3_bucket_lifecycle_configuration" "this" {
   rule {
     id     = "archive-old-messages"
     status = "Enabled"
+    
+    filter {}
 
     transition {
       days          = 30
